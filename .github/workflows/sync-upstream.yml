@@ -8,41 +8,42 @@ on:
 
 permissions:
   contents: write
-  pull-requests: write
+
+concurrency:
+  group: azerothcore-upstream-sync
+  cancel-in-progress: false
 
 jobs:
   sync:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout master
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           ref: master
           fetch-depth: 0
+          persist-credentials: true
 
       - name: Configure Git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Fetch official AzerothCore
+      - name: Fetch branches and upstream
         run: |
           git remote add upstream https://github.com/azerothcore/azerothcore-wotlk.git
           git fetch upstream master
+          git fetch origin master develop
 
-      - name: Update master
+      - name: Merge official updates into master
         run: |
+          git switch master
           git merge --no-edit upstream/master
           git push origin master
 
-      - name: Create update PR for develop
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Merge master into develop
         run: |
-          gh pr create \
-            --base develop \
-            --head master \
-            --title "Sync upstream AzerothCore" \
-            --body "Official AzerothCore updates ready for review." \
-            || echo "PR already exists or no updates needed."
+          git switch -C develop origin/develop
+          git merge --no-edit master
+          git push origin develop
