@@ -33,7 +33,7 @@ jobs:
 
       - name: Update master
         run: |
-          git merge --ff-only upstream/master
+          git merge --no-edit upstream/master
           git push origin master
 
       - name: Create update PR for develop
