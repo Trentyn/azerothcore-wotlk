@@ -1,9 +1,9 @@
-
 name: Sync AzerothCore Upstream
 
 on:
   schedule:
-    - cron: '0 4 * * *'
+    # 04:07 UTC: off the top of the hour, where GitHub delays scheduled runs the most
+    - cron: '7 4 * * *'
   workflow_dispatch:
 
 permissions:
@@ -16,34 +16,72 @@ concurrency:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: master
           fetch-depth: 0
+          # GITHUB_TOKEN cannot push upstream commits that touch .github/workflows.
+          # SYNC_TOKEN (fine-grained PAT: Contents + Workflows read/write) removes that limit.
+          token: ${{ secrets.SYNC_TOKEN || github.token }}
           persist-credentials: true
 
       - name: Configure Git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-      - name: Fetch branches and upstream
-        run: |
           git remote add upstream https://github.com/azerothcore/azerothcore-wotlk.git
-          git fetch upstream master
-          git fetch origin master develop
 
+      # Each sync step retries when the push is rejected because the branch moved
+      # meanwhile. A merge conflict stops the job without pushing anything.
       - name: Merge official updates into master
         run: |
-          git switch master
-          git merge --no-edit upstream/master
-          git push origin master
+          for attempt in 1 2 3; do
+            git fetch upstream master
+            git fetch origin master
+            git switch -C master origin/master
+            if ! git merge --no-edit upstream/master; then
+              git diff --name-only --diff-filter=U | sed 's/^/::error::Conflict in /'
+              git merge --abort
+              echo "::error::upstream/master conflicts with master. Nothing was pushed; resolve the merge manually."
+              exit 1
+            fi
+            git push origin master && exit 0
+            echo "::warning::Push to master rejected (attempt $attempt), retrying"
+            sleep 10
+          done
+          echo "::error::Could not push master. If the log mentions 'workflows' permission, add the SYNC_TOKEN secret."
+          exit 1
 
       - name: Merge master into develop
         run: |
-          git switch -C develop origin/develop
-          git merge --no-edit master
-          git push origin develop
+          for attempt in 1 2 3; do
+            git fetch origin master develop
+            git switch -C develop origin/develop
+            if ! git merge --no-edit origin/master; then
+              git diff --name-only --diff-filter=U | sed 's/^/::error::Conflict in /'
+              git merge --abort
+              echo "::error::master conflicts with develop. develop was left untouched; resolve the merge manually."
+              exit 1
+            fi
+            git push origin develop && exit 0
+            echo "::warning::Push to develop rejected (attempt $attempt), retrying"
+            sleep 10
+          done
+          echo "::error::Could not push develop. If the log mentions 'workflows' permission, add the SYNC_TOKEN secret."
+          exit 1
+
+      - name: Summary
+        if: always()
+        run: |
+          git fetch -q origin master develop
+          m=origin/master; d=origin/develop; u=upstream/master
+          {
+            echo "### Sync result"
+            echo "- upstream/master: \`$(git rev-parse --short $u)\`"
+            echo "- master: \`$(git rev-parse --short $m)\` (behind upstream: $(git rev-list --count $m..$u))"
+            echo "- develop: \`$(git rev-parse --short $d)\` (behind master: $(git rev-list --count $d..$m))"
+          } >> "$GITHUB_STEP_SUMMARY"
